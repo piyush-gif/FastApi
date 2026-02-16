@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from schema import Register
+from schema import Login
 app = FastAPI()
 
 todos=["drink", "run"]
@@ -27,8 +28,15 @@ def post_register(user: Register):
     "password" : user.password
         }
   
-  info.append(data)
+  
 
   return data
 
+@app.post("/login")
+def login_register(user : Login):
 
+  data = {
+    "id" : user.id,
+    "email" : user.email,
+    "password": user.password
+  }
