@@ -1,42 +1,38 @@
 from fastapi import FastAPI
-from schema import Register
-from schema import Login
+import httpx
 app = FastAPI()
-
-todos=["drink", "run"]
-
-info = []
 
 @app.get("/")
 def read_root():
   return {"Hello":"World"}
 
 
+@app.get("/pokemon/{name}")
+async def pokemon_info(name: str):
+  async with httpx.AsyncClient() as client:
+    response = await client.get(f"https://pokeapi.co/api/v2/pokemon/{name}")
+    data = response.json()
 
-@app.get("/items/{items_id}")
-def get_items(items_id: int):
-  todos.append(items_id)
-  return todos
-
-@app.post("/register")
-def post_register(user: Register):
-
-  data = {
-    "id" : user.id,
-    "name" : user.name,
-    "email" : user.email,
-    "password" : user.password
-        }
-  
+    return {
+      "id" : data["id"],
+      "sprite":data["sprites"]["front_default"],
+      "name" : data["name"],
+      "height" : data["height"],
+    }
   
 
-  return data
+@app.get("/pokemon/")
+async def pokemon_list(limit: int = 20, offset: int = 0):
+  async with httpx.AsyncClient() as client:
+    response = await client.get(f"https://pokeapi.co/api/v2/pokemon/?limit={limit}&offset={offset}")
+    data = response.json()
+    return data
+  
 
-@app.post("/login")
-def login_register(user : Login):
 
-  data = {
-    "id" : user.id,
-    "email" : user.email,
-    "password": user.password
-  }
+@app.get("/pokemon/{name}/moves")
+async def pokemon_moves(name : str):
+  async with httpx.AsyncClient() as client:
+    response = await client.get(f"https://pokeapi.co/api/v2/pokemon/{name}")
+    data = response.json()
+    return {"moves" : [m["move"]["name"] for m in data["moves"]]}
