@@ -1,18 +1,35 @@
 from fastapi import FastAPI
-from pydantic import BaseModel
-import httpx
+from fastapi.middleware.cors import CORSMiddleware
+from schemas.User import UserRequest, RegisterRequest
+from sqlalchemy.orm import Session
+from database import get_db
 app = FastAPI()
 
+origins = [
+    "http://localhost:3000",
+    "http://localhost:5173",
+]
 
-class RegisterRequest(BaseModel):
-  username: str
-  email: str
-  passwrod: str
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-
-@app.post("post")
+@app.post("/register")
 def register(user: RegisterRequest):
   return {
     "message" : "Registered",
     "username" : user.username
   }
+
+@app.post("/login")
+def register(user: UserRequest ):
+  return {
+    "message" : "Logged in",
+    "username" : user.username
+  }
+
+
