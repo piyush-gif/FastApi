@@ -1,9 +1,10 @@
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from schemas.User import UserRequest, RegisterRequest
+from schemas.User import LoginRequest, RegisterRequest
 from sqlalchemy.orm import Session
 from database import get_db, engine
 from models.models import Base, User
+from auth.token import create_access_token, create_refresh_token
 import bcrypt
 app = FastAPI()
 
@@ -12,8 +13,6 @@ origins = [
     "http://localhost:5173",
 ]
 
-Base.metadata.create_all(bind=engine)
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -21,6 +20,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+Base.metadata.create_all(bind=engine)
 
 @app.post("/register")
 def register(user: RegisterRequest, db: Session = Depends(get_db)):
@@ -40,10 +41,19 @@ def register(user: RegisterRequest, db: Session = Depends(get_db)):
   db.refresh(new_user)
 
 @app.post("/login")
-def register(user: UserRequest ):
+def register(user: LoginRequest, db: Session = Depends(get_db) ):
+  db_user = db.query(User).filter(User.email == user.email).first()
+  if not db_user:
+    raise HTTPException(status_code = 400, detail = "User not found")
+
+  if not bcrypt.checkpw(user.password.encode("utf-8"), db_user.hashed_password):
+        raise HTTPException(status_code=400, detail="Incorrect password")
+  
+  access_token = create_access_token({"sub": db_user.username})
+  refresh_token = create_refresh_token({"sub": db_user.username})
+
   return {
-    "message" : "Logged in",
-    "username" : user.username
-  }
-
-
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer"
+    }
