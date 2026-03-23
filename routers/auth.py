@@ -32,10 +32,10 @@ def login(user: LoginRequest, db: Session = Depends(get_db)):
     if not bcrypt.checkpw(user.password.encode("utf-8"), db_user.hashed_password.encode("utf-8")):
         raise HTTPException(status_code=400, detail="Incorrect password")
     
-    access_token = create_access_token({"sub": db_user.username})
-    refresh_token = create_refresh_token({"sub": db_user.username})
+    access_token = create_access_token({"id": db_user.id})
+    refresh_token = create_refresh_token({"id": db_user.id})
     
-    response = JSONResponse(content={"message": "Logged in"})
+    response = JSONResponse(content={"access_token": access_token, "refresh_token": refresh_token})
     response.set_cookie(key="access_token", value=access_token, httponly=True, samesite="lax")
     response.set_cookie(key="refresh_token", value=refresh_token, httponly=True, samesite="lax")
     return response
@@ -49,11 +49,11 @@ def refresh(request: Request):
         payload = jwt.decode(token, REFRESH_SECRET_KEY, algorithms=[ALGORITHM])
         if payload.get("type") != "refresh":
             raise HTTPException(status_code=401, detail="Invalid token type")
-        username = payload.get("sub")
+        id = payload.get("id")
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
     
-    new_access_token = create_access_token({"sub": username})
+    new_access_token = create_access_token({"id": id})
     response = JSONResponse(content={"message": "Token refreshed"})
     response.set_cookie(key="access_token", value=new_access_token, httponly=True, samesite="lax")
     return response
@@ -67,11 +67,19 @@ def me(request: Request, db: Session = Depends(get_db)):
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         if payload.get("type") != "access":
             raise HTTPException(status_code=401, detail="Invalid token type")
-        username = payload.get("sub")
+        id = payload.get("id")
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
     
-    user = db.query(User).filter(User.username == username).first()
+    user = db.query(User).filter(User.id == id).first()
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
-    return {"username": user.username, "email": user.email}
+    return {"id" : user.id, "username": user.username, "email": user.email}
+
+
+@router.post("/logout")
+def logout():
+    response = JSONResponse(content={"message": "Logged out successfully"})
+    response.delete_cookie(key="access_token")
+    response.delete_cookie(key="refresh_token")
+    return response
