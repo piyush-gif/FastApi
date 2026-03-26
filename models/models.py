@@ -13,6 +13,7 @@ class User(Base):
 
     caught_pokemon = relationship("CaughtPokemon", back_populates="user")
     favorites = relationship("Favorite", back_populates="user")
+    encounter_logs = relationship("EncounterLog", back_populates="user")
 
 
 class Pokemon(Base):
@@ -53,3 +54,11 @@ class Favorite(Base):
 
     user = relationship("User", back_populates="favorites")
     pokemon = relationship("Pokemon", back_populates="favorited_by")
+
+class EncounterLog(Base):
+    __tablename__ = "encounter_logs"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    date = Column(String(20), nullable=False)  # stored as "YYYY-MM-DD"
+    count = Column(Integer, default=0)
+    user = relationship("User", back_populates="encounter_logs")

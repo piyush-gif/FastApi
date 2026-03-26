@@ -4,6 +4,7 @@ from database import engine
 from models.models import Base
 from routers.auth import router as auth_router
 from routers.pokedex import router as pokedex_router
+from routers.explore import router as explore_router
 
 
 app = FastAPI()
@@ -25,3 +26,4 @@ Base.metadata.create_all(bind=engine)
 
 app.include_router(auth_router)
 app.include_router(pokedex_router)
+app.include_router(explore_router)
