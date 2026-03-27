@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from database import get_db
-from models.models import Pokemon, CaughtPokemon, EncounterLog, User
+from models.models import Pokemon, CaughtPokemon, EncounterLog, User, Favorite
 from auth.token import SECRET_KEY, ALGORITHM
 from jose import jwt, JWTError
 from datetime import date
@@ -34,20 +34,25 @@ def get_current_user(request: Request, db: Session):
         raise HTTPException(status_code=401, detail="User not found")
     return user
 
+# Cache routes so we don't hammer PokéAPI every time
+routes_cache = {}
+
 @router.get("/explore/routes/{region_name}")
 async def get_routes(region_name: str):
     region_id = REGION_IDS.get(region_name.lower())
     if not region_id:
         raise HTTPException(status_code=404, detail="Region not found")
 
-    async with httpx.AsyncClient(timeout=10) as client:
-        # 1. Get all locations in the region
+    # Return cached routes if available
+    if region_name in routes_cache:
+        return {"routes": routes_cache[region_name]}
+
+    async with httpx.AsyncClient(timeout=30) as client:
         res = await client.get(f"https://pokeapi.co/api/v2/region/{region_id}")
         if res.status_code != 200:
             raise HTTPException(status_code=404, detail="Region not found in PokéAPI")
         locations = res.json().get("locations", [])
 
-        # 2. For each location, fetch its areas and collect area names
         area_names = []
         for loc in locations:
             loc_res = await client.get(loc["url"])
@@ -57,8 +62,8 @@ async def get_routes(region_name: str):
             for area in areas:
                 area_names.append(area["name"])
 
+    routes_cache[region_name] = area_names
     return {"routes": area_names}
-
 @router.get("/explore/encounter/{route_name}")
 async def get_encounter(route_name: str, request: Request, db: Session = Depends(get_db)):
     user = get_current_user(request, db)
@@ -152,3 +157,103 @@ def catch_pokemon(body: dict, request: Request, db: Session = Depends(get_db)):
         return {"result": "caught", "message": f"You caught {pokemon.name.capitalize()}!"}
     else:
         return {"result": "fled", "message": f"{pokemon.name.capitalize()} fled!"}
+    
+@router.get("/explore/collection")
+def get_collection(request: Request, db: Session = Depends(get_db)):
+    user = get_current_user(request, db)
+    
+    caught = db.query(CaughtPokemon).filter(
+        CaughtPokemon.user_id == user.id
+    ).all()
+
+    result = []
+    for c in caught:
+        pokemon = db.query(Pokemon).filter(Pokemon.id == c.pokemon_id).first()
+        if pokemon:
+            result.append({
+                "id": c.id,
+                "pokemon_id": pokemon.id,
+                "name": pokemon.name,
+                "types": pokemon.types,
+                "sprite": pokemon.sprite,
+                "caught_at": str(c.caught_at),
+            })
+
+    return {"collection": result}
+
+
+@router.get("/explore/favorites")
+def get_favorites(request: Request, db: Session = Depends(get_db)):
+    user = get_current_user(request, db)
+
+    favs = db.query(Favorite).filter(Favorite.user_id == user.id).all()
+
+    result = []
+    for f in favs:
+        pokemon = db.query(Pokemon).filter(Pokemon.id == f.pokemon_id).first()
+        if pokemon:
+            result.append({
+                "id": f.id,
+                "pokemon_id": pokemon.id,
+                "name": pokemon.name,
+                "types": pokemon.types,
+                "sprite": pokemon.sprite,
+            })
+
+    return {"favorites": result}
+
+@router.post("/explore/favorite/{pokemon_id}")
+def add_favorite(pokemon_id: int, request: Request, db: Session = Depends(get_db)):
+    user = get_current_user(request, db)
+
+    # Check if pokemon is caught
+    caught = db.query(CaughtPokemon).filter(
+        CaughtPokemon.user_id == user.id,
+        CaughtPokemon.pokemon_id == pokemon_id
+    ).first()
+    if not caught:
+        raise HTTPException(status_code=400, detail="You can only favorite pokemon you have caught!")
+
+    # Check if already favorited
+    existing = db.query(Favorite).filter(
+        Favorite.user_id == user.id,
+        Favorite.pokemon_id == pokemon_id
+    ).first()
+    if existing:
+        return {"message": "Already favorited"}
+
+    fav = Favorite(user_id=user.id, pokemon_id=pokemon_id)
+    db.add(fav)
+    db.commit()
+    return {"message": "Added to favorites"}
+
+@router.delete("/explore/favorite/{pokemon_id}")
+def remove_favorite(pokemon_id: int, request: Request, db: Session = Depends(get_db)):
+    user = get_current_user(request, db)
+
+    fav = db.query(Favorite).filter(
+        Favorite.user_id == user.id,
+        Favorite.pokemon_id == pokemon_id
+    ).first()
+    if not fav:
+        raise HTTPException(status_code=404, detail="Favorite not found")
+
+    db.delete(fav)
+    db.commit()
+    return {"message": "Removed from favorites"}
+
+@router.get("/explore/encounter-status")
+def get_encounter_status(request: Request, db: Session = Depends(get_db)):
+    user = get_current_user(request, db)
+    today = str(date.today())
+    
+    log = db.query(EncounterLog).filter(
+        EncounterLog.user_id == user.id,
+        EncounterLog.date == today
+    ).first()
+
+    count = log.count if log else 0
+    return {
+        "encounters_used": count,
+        "encounters_remaining": MAX_ENCOUNTERS_PER_DAY - count
+    }
