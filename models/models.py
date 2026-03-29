@@ -16,6 +16,7 @@ class User(Base):
     encounter_logs = relationship("EncounterLog", back_populates="user")
     progress = relationship("PlayerProgress", back_populates="user", uselist=False)
     badges = relationship("Badge", back_populates="user")
+    battle_session = relationship("BattleSession", back_populates="user", uselist=False)
 
 
 class Pokemon(Base):
@@ -87,3 +88,12 @@ class Badge(Base):
     badge_name = Column(String(100), nullable=False)
     earned_at = Column(DateTime, default=datetime.utcnow)
     user = relationship("User", back_populates="badges")
+
+class BattleSession(Base):
+    __tablename__ = "battle_sessions"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True)
+    state = Column(JSON, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+    user = relationship("User", back_populates="battle_session")

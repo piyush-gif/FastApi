@@ -1,41 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from database import get_db
-from models.models import Pokemon, CaughtPokemon, PlayerProgress, Badge, User
+from models.models import Pokemon, CaughtPokemon, PlayerProgress, Badge, User, BattleSession
 from auth.token import SECRET_KEY, ALGORITHM
 from jose import jwt, JWTError
-from pydantic import BaseModel
-from typing import List, Any, Dict
+from datetime import datetime
 import httpx
 import random
 
 router = APIRouter()
-
-class PokemonState(BaseModel):
-    pokemon_id: int
-    name: str
-    sprite: str
-    types: List[str]
-    stats: Dict[str, Any]
-    max_hp: int
-    current_hp: int
-    moves: List[Dict[str, Any]]
-
-    class Config:
-        arbitrary_types_allowed = True
-class BattleMoveRequest(BaseModel):
-    gym_id: int
-    player_team: List[PokemonState]
-    gym_team: List[PokemonState]
-    active_player_index: int = 0
-    active_gym_index: int = 0
-    potions_used: int = 0
-    action: str
-    move_index: int = 0
-    log: List[str] = []
-
-    class Config:
-        arbitrary_types_allowed = True
 
 GYMS = {
     1: {
@@ -259,6 +232,28 @@ async def get_pokemon_moves(pokemon_id: int):
                 })
         return moves
 
+def save_session(user_id: int, state: dict, db: Session):
+    session = db.query(BattleSession).filter(BattleSession.user_id == user_id).first()
+    if session:
+        session.state = state
+        session.updated_at = datetime.utcnow()
+    else:
+        session = BattleSession(user_id=user_id, state=state)
+        db.add(session)
+    db.commit()
+
+def load_session(user_id: int, db: Session):
+    session = db.query(BattleSession).filter(BattleSession.user_id == user_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="No active battle session found")
+    return session.state
+
+def delete_session(user_id: int, db: Session):
+    session = db.query(BattleSession).filter(BattleSession.user_id == user_id).first()
+    if session:
+        db.delete(session)
+        db.commit()
+
 @router.get("/battle/gyms")
 def get_gyms(request: Request, db: Session = Depends(get_db)):
     user = get_current_user(request, db)
@@ -343,7 +338,7 @@ async def start_battle(gym_id: int, body: dict, request: Request, db: Session = 
             "moves": moves,
         })
 
-    return {
+    state = {
         "gym_id": gym_id,
         "gym_name": gym["gym"],
         "leader_name": gym["name"],
@@ -354,22 +349,32 @@ async def start_battle(gym_id: int, body: dict, request: Request, db: Session = 
         "potions_used": 0,
         "turn": "player",
         "log": [f"You challenged {gym['name']} of {gym['gym']}!"],
+        "battle_over": False,
+        "winner": None,
     }
 
+    save_session(user.id, state, db)
+    return state
+
 @router.post("/battle/move")
-def battle_move(body: BattleMoveRequest, request: Request, db: Session = Depends(get_db)):
+async def battle_move(request: Request, db: Session = Depends(get_db)):
     user = get_current_user(request, db)
     progress = get_or_create_progress(user.id, db)
 
-    gym_id = body.gym_id
-    player_team = [p.model_dump() for p in body.player_team]
-    gym_team = [g.model_dump() for g in body.gym_team]
-    active_player_index = body.active_player_index
-    active_gym_index = body.active_gym_index
-    potions_used = body.potions_used
-    action = body.action
-    move_index = body.move_index
-    log = list(body.log)
+    body = await request.json()
+    action = body.get("action")
+    move_index = body.get("move_index", 0)
+
+    # Load state from DB
+    state = load_session(user.id, db)
+
+    gym_id = state["gym_id"]
+    player_team = state["player_team"]
+    gym_team = state["gym_team"]
+    active_player_index = state["active_player_index"]
+    active_gym_index = state["active_gym_index"]
+    potions_used = state["potions_used"]
+    log = state["log"]
 
     gym = GYMS.get(gym_id)
     if not gym:
@@ -378,26 +383,20 @@ def battle_move(body: BattleMoveRequest, request: Request, db: Session = Depends
     player_pokemon = player_team[active_player_index]
     gym_pokemon = gym_team[active_gym_index]
 
+    # Handle potion
     if action == "potion":
         if potions_used >= 3:
-            return {
-                "player_team": player_team,
-                "gym_team": gym_team,
-                "active_player_index": active_player_index,
-                "active_gym_index": active_gym_index,
-                "potions_used": potions_used,
-                "turn": "player",
-                "log": log + ["You have no potions left!"],
-                "battle_over": False,
-            }
-        heal = 50
-        player_pokemon["current_hp"] = min(
-            player_pokemon["max_hp"],
-            player_pokemon["current_hp"] + heal
-        )
-        potions_used += 1
-        log.append(f"{player_pokemon['name'].capitalize()} restored {heal} HP!")
+            log.append("You have no potions left!")
+        else:
+            heal = 50
+            player_pokemon["current_hp"] = min(
+                player_pokemon["max_hp"],
+                player_pokemon["current_hp"] + heal
+            )
+            potions_used += 1
+            log.append(f"{player_pokemon['name'].capitalize()} restored {heal} HP!")
 
+    # Handle move
     elif action == "move":
         moves = player_pokemon.get("moves", [])
         if not moves:
@@ -417,7 +416,9 @@ def battle_move(body: BattleMoveRequest, request: Request, db: Session = Depends
         if gym_pokemon["current_hp"] == 0:
             log.append(f"{gym_pokemon['name'].capitalize()} fainted!")
             active_gym_index += 1
+
             if active_gym_index >= len(gym_team):
+                # Player wins
                 already_won = db.query(Badge).filter(
                     Badge.user_id == user.id,
                     Badge.gym_id == gym_id
@@ -431,23 +432,35 @@ def battle_move(body: BattleMoveRequest, request: Request, db: Session = Depends
                     if progress.current_gym == gym_id:
                         progress.current_gym += 1
                     db.commit()
+
                 log.append(f"You defeated {gym['name']}! You earned the {gym['badge']}!")
                 log.append(f"You received {gym['reward_coins']} coins!")
-                return {
+
+                state.update({
                     "player_team": player_team,
                     "gym_team": gym_team,
                     "active_player_index": active_player_index,
                     "active_gym_index": active_gym_index,
                     "potions_used": potions_used,
-                    "turn": "player",
                     "log": log,
                     "battle_over": True,
                     "winner": "player",
-                }
+                })
+                save_session(user.id, state, db)
+                delete_session(user.id, db)
+                return state
             else:
                 log.append(f"{gym['name']} sent out {gym_team[active_gym_index]['name'].capitalize()}!")
 
-    # Gym leader AI turn
+    # Handle switch
+    elif action == "switch":
+        switch_index = body.get("switch_index", 0)
+        if switch_index != active_player_index and player_team[switch_index]["current_hp"] > 0:
+            active_player_index = switch_index
+            log.append(f"Go, {player_team[active_player_index]['name'].capitalize()}!")
+            player_pokemon = player_team[active_player_index]
+
+    # Gym leader AI turn (skip if potion was used or pokemon switched — gym still attacks)
     gym_pokemon = gym_team[active_gym_index]
     player_pokemon = player_team[active_player_index]
 
@@ -472,29 +485,56 @@ def battle_move(body: BattleMoveRequest, request: Request, db: Session = Depends
     if player_pokemon["current_hp"] == 0:
         log.append(f"{player_pokemon['name'].capitalize()} fainted!")
         active_player_index += 1
+
         if active_player_index >= len(player_team):
             log.append(f"You lost to {gym['name']}! Try again!")
-            return {
+            state.update({
                 "player_team": player_team,
                 "gym_team": gym_team,
                 "active_player_index": active_player_index,
                 "active_gym_index": active_gym_index,
                 "potions_used": potions_used,
-                "turn": "player",
                 "log": log,
                 "battle_over": True,
                 "winner": "gym",
-            }
+            })
+            save_session(user.id, state, db)
+            delete_session(user.id, db)
+            return state
         else:
             log.append(f"Go, {player_team[active_player_index]['name'].capitalize()}!")
 
-    return {
+    state.update({
         "player_team": player_team,
         "gym_team": gym_team,
         "active_player_index": active_player_index,
         "active_gym_index": active_gym_index,
         "potions_used": potions_used,
-        "turn": "player",
         "log": log,
         "battle_over": False,
-    }
+        "winner": None,
+    })
+    save_session(user.id, state, db)
+    return state
+
+@router.post("/battle/switch")
+async def switch_pokemon(request: Request, db: Session = Depends(get_db)):
+    user = get_current_user(request, db)
+    body = await request.json()
+    switch_index = body.get("switch_index", 0)
+
+    state = load_session(user.id, db)
+    player_team = state["player_team"]
+    log = state["log"]
+
+    if switch_index == state["active_player_index"]:
+        return state
+    if player_team[switch_index]["current_hp"] <= 0:
+        raise HTTPException(status_code=400, detail="That pokemon has fainted!")
+
+    state["active_player_index"] = switch_index
+    log.append(f"Go, {player_team[switch_index]['name'].capitalize()}!")
+    state["log"] = log
+
+    save_session(user.id, state, db)
+    return state
