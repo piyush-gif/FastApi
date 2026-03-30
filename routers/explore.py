@@ -131,6 +131,7 @@ async def get_encounter(route_name: str, request: Request, db: Session = Depends
 def catch_pokemon(body: dict, request: Request, db: Session = Depends(get_db)):
     user = get_current_user(request, db)
     pokemon_id = body.get("pokemon_id")
+    ball_type = body.get("ball_type", "pokeball")
 
     if not pokemon_id:
         raise HTTPException(status_code=400, detail="pokemon_id required")
@@ -139,6 +140,27 @@ def catch_pokemon(body: dict, request: Request, db: Session = Depends(get_db)):
     if not pokemon:
         raise HTTPException(status_code=404, detail="Pokemon not found")
 
+    # Check inventory
+    from models.models import PlayerProgress
+    progress = db.query(PlayerProgress).filter(PlayerProgress.user_id == user.id).first()
+    if not progress:
+        from routers.shop import get_or_create_progress
+        progress = get_or_create_progress(user.id, db)
+
+    # Check ball availability and multiplier
+    BALL_DATA = {
+        "pokeball": {"field": "pokeballs", "multiplier": 1.0},
+        "great_ball": {"field": "great_balls", "multiplier": 1.5},
+        "ultra_ball": {"field": "ultra_balls", "multiplier": 2.0},
+    }
+
+    ball = BALL_DATA.get(ball_type, BALL_DATA["pokeball"])
+    ball_count = getattr(progress, ball["field"])
+
+    if ball_count <= 0:
+        raise HTTPException(status_code=400, detail=f"No {ball_type}s left!")
+
+    # Check if already caught
     already_caught = db.query(CaughtPokemon).filter(
         CaughtPokemon.user_id == user.id,
         CaughtPokemon.pokemon_id == pokemon_id
@@ -146,8 +168,12 @@ def catch_pokemon(body: dict, request: Request, db: Session = Depends(get_db)):
     if already_caught:
         return {"result": "already_caught", "message": "You already have this pokemon!"}
 
+    # Deduct ball from inventory
+    setattr(progress, ball["field"], ball_count - 1)
+
+    # Calculate catch success
     capture_rate = pokemon.capture_rate or 45
-    catch_probability = capture_rate / 255
+    catch_probability = min(1.0, (capture_rate / 255) * ball["multiplier"])
     success = random.random() < catch_probability
 
     if success:
@@ -156,6 +182,7 @@ def catch_pokemon(body: dict, request: Request, db: Session = Depends(get_db)):
         db.commit()
         return {"result": "caught", "message": f"You caught {pokemon.name.capitalize()}!"}
     else:
+        db.commit()
         return {"result": "fled", "message": f"{pokemon.name.capitalize()} fled!"}
     
 @router.get("/explore/collection")

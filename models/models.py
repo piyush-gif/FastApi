@@ -77,6 +77,9 @@ class PlayerProgress(Base):
     pokeballs = Column(Integer, default=10)
     great_balls = Column(Integer, default=0)
     ultra_balls = Column(Integer, default=0)
+    potions = Column(Integer, default=3)
+    super_potions = Column(Integer, default=0)
+    max_potions = Column(Integer, default=0)
     user = relationship("User", back_populates="progress")
 
 
@@ -97,3 +100,4 @@ class BattleSession(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow)
     user = relationship("User", back_populates="battle_session")
+
