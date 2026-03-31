@@ -173,6 +173,12 @@ TYPE_CHART = {
     "steel": {"fire": 0.5, "water": 0.5, "electric": 0.5, "ice": 2, "rock": 2, "steel": 0.5},
 }
 
+POTION_DATA = {
+    "potion": {"field": "potions", "heal": 50},
+    "super_potion": {"field": "super_potions", "heal": 100},
+    "max_potion": {"field": "max_potions", "heal": None},  # None means full heal
+}
+
 def get_current_user(request: Request, db: Session):
     token = request.cookies.get("access_token")
     if not token:
@@ -254,6 +260,13 @@ def delete_session(user_id: int, db: Session):
         db.delete(session)
         db.commit()
 
+def get_inventory_counts(progress):
+    return {
+        "potions": progress.potions,
+        "super_potions": progress.super_potions,
+        "max_potions": progress.max_potions,
+    }
+
 @router.get("/battle/gyms")
 def get_gyms(request: Request, db: Session = Depends(get_db)):
     user = get_current_user(request, db)
@@ -279,6 +292,9 @@ def get_progress(request: Request, db: Session = Depends(get_db)):
         "pokeballs": progress.pokeballs,
         "great_balls": progress.great_balls,
         "ultra_balls": progress.ultra_balls,
+        "potions": progress.potions,
+        "super_potions": progress.super_potions,
+        "max_potions": progress.max_potions,
         "badges": [{"gym_id": b.gym_id, "badge_name": b.badge_name} for b in badges],
     }
 
@@ -346,11 +362,11 @@ async def start_battle(gym_id: int, body: dict, request: Request, db: Session = 
         "gym_team": gym_team,
         "active_player_index": 0,
         "active_gym_index": 0,
-        "potions_used": 0,
         "turn": "player",
         "log": [f"You challenged {gym['name']} of {gym['gym']}!"],
         "battle_over": False,
         "winner": None,
+        **get_inventory_counts(progress),
     }
 
     save_session(user.id, state, db)
@@ -364,8 +380,8 @@ async def battle_move(request: Request, db: Session = Depends(get_db)):
     body = await request.json()
     action = body.get("action")
     move_index = body.get("move_index", 0)
+    potion_type = body.get("potion_type", "potion")
 
-    # Load state from DB
     state = load_session(user.id, db)
 
     gym_id = state["gym_id"]
@@ -373,7 +389,6 @@ async def battle_move(request: Request, db: Session = Depends(get_db)):
     gym_team = state["gym_team"]
     active_player_index = state["active_player_index"]
     active_gym_index = state["active_gym_index"]
-    potions_used = state["potions_used"]
     log = state["log"]
 
     gym = GYMS.get(gym_id)
@@ -385,15 +400,19 @@ async def battle_move(request: Request, db: Session = Depends(get_db)):
 
     # Handle potion
     if action == "potion":
-        if potions_used >= 3:
-            log.append("You have no potions left!")
+        potion = POTION_DATA.get(potion_type, POTION_DATA["potion"])
+        count = getattr(progress, potion["field"])
+
+        if count <= 0:
+            log.append(f"No {potion_type.replace('_', ' ')}s left!")
         else:
-            heal = 50
+            setattr(progress, potion["field"], count - 1)
+            heal = potion["heal"] if potion["heal"] is not None else player_pokemon["max_hp"]
             player_pokemon["current_hp"] = min(
                 player_pokemon["max_hp"],
                 player_pokemon["current_hp"] + heal
             )
-            potions_used += 1
+            db.commit()
             log.append(f"{player_pokemon['name'].capitalize()} restored {heal} HP!")
 
     # Handle move
@@ -418,7 +437,6 @@ async def battle_move(request: Request, db: Session = Depends(get_db)):
             active_gym_index += 1
 
             if active_gym_index >= len(gym_team):
-                # Player wins
                 already_won = db.query(Badge).filter(
                     Badge.user_id == user.id,
                     Badge.gym_id == gym_id
@@ -441,12 +459,11 @@ async def battle_move(request: Request, db: Session = Depends(get_db)):
                     "gym_team": gym_team,
                     "active_player_index": active_player_index,
                     "active_gym_index": active_gym_index,
-                    "potions_used": potions_used,
                     "log": log,
                     "battle_over": True,
                     "winner": "player",
+                    **get_inventory_counts(progress),
                 })
-                save_session(user.id, state, db)
                 delete_session(user.id, db)
                 return state
             else:
@@ -460,7 +477,7 @@ async def battle_move(request: Request, db: Session = Depends(get_db)):
             log.append(f"Go, {player_team[active_player_index]['name'].capitalize()}!")
             player_pokemon = player_team[active_player_index]
 
-    # Gym leader AI turn (skip if potion was used or pokemon switched — gym still attacks)
+    # Gym leader AI turn
     gym_pokemon = gym_team[active_gym_index]
     player_pokemon = player_team[active_player_index]
 
@@ -493,12 +510,11 @@ async def battle_move(request: Request, db: Session = Depends(get_db)):
                 "gym_team": gym_team,
                 "active_player_index": active_player_index,
                 "active_gym_index": active_gym_index,
-                "potions_used": potions_used,
                 "log": log,
                 "battle_over": True,
                 "winner": "gym",
+                **get_inventory_counts(progress),
             })
-            save_session(user.id, state, db)
             delete_session(user.id, db)
             return state
         else:
@@ -509,10 +525,10 @@ async def battle_move(request: Request, db: Session = Depends(get_db)):
         "gym_team": gym_team,
         "active_player_index": active_player_index,
         "active_gym_index": active_gym_index,
-        "potions_used": potions_used,
         "log": log,
         "battle_over": False,
         "winner": None,
+        **get_inventory_counts(progress),
     })
     save_session(user.id, state, db)
     return state
