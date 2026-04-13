@@ -4,7 +4,7 @@ from database import engine
 from models.models import Base
 from routers.auth import router as auth_router
 from routers.pokedex import router as pokedex_router
-from routers.explore import router as explore_router
+from routers.explore import router as explore_router 
 from routers.battle import router as battle_router
 from routers.shop import router as shop_router
 
